@@ -1,3 +1,4 @@
 # Teste1
-repositÃ³rio de teste
+repositório de teste
 teste de commit 1
+teste de commit 2
