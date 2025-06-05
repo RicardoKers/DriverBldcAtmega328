@@ -1,4 +1,4 @@
-# Teste1
+# Acionamento BLDC ATmega328
 
 This repository contains a firmware example for **BLDC** motor control using the **ATmega328P** microcontroller. The code generates a 10 kHz PWM to drive the motor phases based on a potentiometer reading (ADC0) and the rotor position provided by the Hall sensors.
 
