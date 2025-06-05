@@ -16,7 +16,7 @@
 // Low side MOSFET pins driven with PWM
 #define AL_PIN PB1 // OC1A
 #define BL_PIN PB2 // OC1B
-#define CL_PIN PD5 // OC0
+#define CL_PIN PD5 // OC0B
 
 // ADC channel for throttle potentiometer
 #define THROTTLE_CH 0
@@ -38,9 +38,10 @@ static inline void pwm_init(void) {
     TCCR1B = (1 << WGM12) | (1 << CS11); // prescaler 8
     OCR1A = 0;
     OCR1B = 0;
-    // Timer0 for phase C low side
-    TCCR0 = (1 << WGM00) | (1 << WGM01) | (1 << COM01) | (1 << CS01); // fast PWM, prescaler 8
-    OCR0 = 0;
+    // Timer0 for phase C low side (uses OC0B on PD5)
+    TCCR0A = (1 << COM0B1) | (1 << WGM01) | (1 << WGM00); // fast PWM, non-inverting
+    TCCR0B = (1 << CS01); // prescaler 8
+    OCR0B = 0;
 }
 
 static inline uint8_t hall_state(void) {
@@ -58,7 +59,7 @@ static void commutate(uint8_t hall, uint8_t duty) {
     // Default: all low side PWMs off
     OCR1A = 0;
     OCR1B = 0;
-    OCR0  = 0;
+    OCR0B = 0;
 
     switch (hall) {
         case 1: // 001
@@ -67,11 +68,11 @@ static void commutate(uint8_t hall, uint8_t duty) {
             break;
         case 5: // 101
             PORTD |= (1 << AH_PIN); // A high
-            OCR0  = duty;          // C low PWM
+            OCR0B = duty;          // C low PWM
             break;
         case 4: // 100
             PORTD |= (1 << BH_PIN); // B high
-            OCR0  = duty;          // C low PWM
+            OCR0B = duty;          // C low PWM
             break;
         case 6: // 110
             PORTD |= (1 << BH_PIN); // B high
