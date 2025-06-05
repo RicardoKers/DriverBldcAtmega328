@@ -1,92 +1,92 @@
 # Teste1
 
-Este repositório contém um exemplo de firmware para controle de motor **BLDC** utilizando o microcontrolador **ATmega328P**. O código gera PWM em 10 kHz para acionar as fases do motor com base na leitura de um potenciômetro (ADC0) e na posição do rotor informada pelos sensores Hall.
+This repository contains a firmware example for **BLDC** motor control using the **ATmega328P** microcontroller. The code generates a 10 kHz PWM to drive the motor phases based on a potentiometer reading (ADC0) and the rotor position provided by the Hall sensors.
 
-## Compilação
+## Build
 
-O projeto pode ser compilado no **Microchip Studio** ou diretamente no terminal com `avr-gcc`. Para gerar o arquivo `HEX` execute:
+The project can be built in **Microchip Studio** or directly on the terminal using `avr-gcc`. To generate the `HEX` file run:
 
 ```sh
 make
 ```
 
-## Entradas e saídas
+## Inputs and outputs
 
-| Pino | Função |
+| Pin | Function |
 |------|--------------------------------------------------------------|
-| PC0  | ADC0 - potenciômetro de comando |
-| PC1  | Hall 1 (entrada digital) |
-| PC2  | Hall 2 (entrada digital) |
-| PC3  | Hall 3 (entrada digital) |
-| PB0  | AH - MOSFET superior fase A |
-| PB1  | BH - MOSFET superior fase B |
-| PB2  | CH - MOSFET superior fase C |
-| PB3  | AL - MOSFET inferior fase A (AND com PWM) |
-| PB4  | BL - MOSFET inferior fase B (AND com PWM) |
-| PB5  | CL - MOSFET inferior fase C (AND com PWM) |
-| PD5  | OC0B - saída PWM 10 kHz |
+| PC0  | ADC0 - command potentiometer |
+| PC1  | Hall 1 (digital input) |
+| PC2  | Hall 2 (digital input) |
+| PC3  | Hall 3 (digital input) |
+| PB0  | AH - high-side MOSFET phase A |
+| PB1  | BH - high-side MOSFET phase B |
+| PB2  | CH - high-side MOSFET phase C |
+| PB3  | AL - low-side MOSFET phase A (AND with PWM) |
+| PB4  | BL - low-side MOSFET phase B (AND with PWM) |
+| PB5  | CL - low-side MOSFET phase C (AND with PWM) |
+| PD5  | OC0B - 10 kHz PWM output |
 
-## Explicações detalhadas por bloco
+## Detailed explanation by block
 
-### Variável global `adc_value`
-- Armazena o resultado das conversões ADC (0 – 1023).
-- Declarada como `uint16_t` para não limitar a 8 bits.
-- Atualizada na `ISR(ADC_vect)`.
+### Global variable `adc_value`
+- Stores the result of ADC conversions (0 – 1023).
+- Declared as `uint16_t` so it is not limited to 8 bits.
+- Updated inside `ISR(ADC_vect)`.
 
-### Definições de pinos (`#define`)
-- `HALL1`, `HALL2`, `HALL3` (PC1, PC2, PC3): entradas digitais conectadas aos sensores Hall do motor.
-- `AH_PIN`, `BH_PIN`, `CH_PIN` (PB0, PB1, PB2): chaves superiores (high-side MOSFETs), apenas ligam 5 V ou desligam.
-- `AL_PIN`, `BL_PIN`, `CL_PIN` (PB3, PB4, PB5): chaves inferiores (low-side MOSFETs), ANDadas externamente com o PWM gerado em PD5.
+### Pin definitions (`#define`)
+- `HALL1`, `HALL2`, `HALL3` (PC1, PC2, PC3): digital inputs connected to the motor Hall sensors.
+- `AH_PIN`, `BH_PIN`, `CH_PIN` (PB0, PB1, PB2): high-side MOSFETs, simply switch 5 V on or off.
+- `AL_PIN`, `BL_PIN`, `CL_PIN` (PB3, PB4, PB5): low-side MOSFETs, externally ANDed with the PWM generated on PD5.
 
-### Gatilho do PWM e AND externo
-O Timer0 gera PWM de 10 kHz no pino PD5 (OC0B). Em hardware, as linhas PB3, PB4 e PB5 (chaves inferiores) sao ANDadas externamente com esse sinal. Assim, o firmware apenas coloca PBx em nivel alto para habilitar a fase desejada e o PWM em PD5 modula a corrente.
+### PWM trigger and external AND
+Timer0 generates a 10 kHz PWM on pin PD5 (OC0B). In hardware the PB3, PB4 and PB5 lines (low-side switches) are externally ANDed with this signal. Therefore the firmware only sets PBx high to enable the desired phase and the PWM on PD5 modulates the current.
 
-### Inicialização do Timer0 (`timer0_pwm_10kHz_init`)
-- `DDRD |= (1 << PD5);` configura PD5 (OC0B) como saída.
+### Timer0 initialization (`timer0_pwm_10kHz_init`)
+- `DDRD |= (1 << PD5);` sets PD5 (OC0B) as output.
 - `TCCR0A = (1 << WGM01) | (1 << WGM00) | (1 << COM0B1);`
   - `WGM01=1`, `WGM00=1` → Fast PWM.
-  - `COM0B1=1`, `COM0B0=0` → modo não inversor em OC0B.
+  - `COM0B1=1`, `COM0B0=0` → non inverting mode on OC0B.
 - `TCCR0B = (1 << WGM02) | (1 << CS01);`
-  - `WGM02=1` → completa WGM02:0 = 7 (TOP = OCR0A).
-  - `CS01=1` → prescaler do Timer0 igual a 8.
-- `OCR0A = 199;` define TOP = 199 resultando em `f_PWM = 16 MHz/(8·200) = 10 kHz`.
-- `OCR0B = 0;` duty cycle inicial em zero.
+  - `WGM02=1` → completes WGM02:0 = 7 (TOP = OCR0A).
+  - `CS01=1` → Timer0 prescaler of 8.
+- `OCR0A = 199;` sets TOP = 199 resulting in `f_PWM = 16 MHz/(8·200) = 10 kHz`.
+- `OCR0B = 0;` initial duty cycle at zero.
 
-### Inicialização do ADC (`adc_free_running_init`)
-- `ADMUX = (1 << REFS0) | …` seleciona AVcc como referência e o canal ADC0.
+### ADC initialization (`adc_free_running_init`)
+- `ADMUX = (1 << REFS0) | …` selects AVcc as reference and channel ADC0.
 - `ADCSRA = (1 << ADEN) | (1 << ADATE) | (1 << ADIE) | (1 << ADPS2) | (1 << ADPS1) | (1 << ADPS0);`
-  - `ADEN=1` → habilita o módulo ADC.
-  - `ADATE=1` → habilita auto-trigger (Free-Running).
-  - `ADIE=1` → habilita interrupção de fim de conversão.
+  - `ADEN=1` → enables the ADC module.
+  - `ADATE=1` → enables auto trigger (Free-Running).
+  - `ADIE=1` → enables end-of-conversion interrupt.
   - `ADPS2:0 = 111` → prescaler 128 (≈125 kHz).
-- `ADCSRB = (0 << ADTS2) | (0 << ADTS1) | (0 << ADTS0);` → fonte de gatilho Free-Running.
-- `ADCSRA |= (1 << ADSC);` dispara a primeira conversão.
+- `ADCSRB = (0 << ADTS2) | (0 << ADTS1) | (0 << ADTS0);` → trigger source Free-Running.
+- `ADCSRA |= (1 << ADSC);` starts the first conversion.
 
-### Leitura dos sensores Hall (`hall_state`)
-- Lê `PINC` e verifica bits `PC1`, `PC2`, `PC3`.
-- Monta um valor de 3 bits que identifica a sequência de fases do rotor (0 a 7).
+### Reading the Hall sensors (`hall_state`)
+- Reads `PINC` and checks bits `PC1`, `PC2`, `PC3`.
+- Builds a 3‑bit value identifying the rotor phase sequence (0 to 7).
 
-### Comutação de fases (`commutate`)
-- Copia `adc_value` para `tmp_adc_value` dentro de `cli()`/`sei()` garantindo leitura atômica.
-- Lê `PORTB` e limpa todos os bits de `AH_PIN`, `BH_PIN`, `CH_PIN`, `AL_PIN`, `BL_PIN`, `CL_PIN`.
-- Se `tmp_adc_value > 10`, executa `switch(hall)` habilitando a combinação de chaves para a fase correspondente.
-- Caso contrário, mantém todas as chaves desligadas.
-- Por fim, grava `PORTB = tmp_PORTB;`.
+### Commutation (`commutate`)
+- Copies `adc_value` to `tmp_adc_value` within `cli()`/`sei()` for an atomic read.
+- Reads `PORTB` and clears all bits of `AH_PIN`, `BH_PIN`, `CH_PIN`, `AL_PIN`, `BL_PIN`, `CL_PIN`.
+- If `tmp_adc_value > 10`, executes `switch(hall)` enabling the proper combination of switches for that phase.
+- Otherwise all switches remain off.
+- Finally writes `PORTB = tmp_PORTB;`.
 
-### ISR do ADC (`ISR(ADC_vect)`)
-- Executa a cada fim de conversão em Free-Running.
-- Lê o valor de 10 bits do ADC.
-- Calcula `duty = (adc_value * 199UL) / 1023UL`.
-- Atualiza `OCR0B`, controlando o PWM em PD5.
+### ADC ISR (`ISR(ADC_vect)`)
+- Runs at every end of conversion in Free‑Running mode.
+- Reads the 10‑bit ADC value.
+- Calculates `duty = (adc_value * 199UL) / 1023UL`.
+- Updates `OCR0B`, controlling the PWM on PD5.
 
-### Função `main()`
-- Configura `PB0`–`PB5` como saídas para controlar os MOSFETs.
-- Desabilita interrupções, inicializa Timer0 e ADC e, em seguida, habilita-as.
-- Entra em laço infinito onde lê `hall_state()` e chama `commutate()`.
+### Function `main()`
+- Sets `PB0`–`PB5` as outputs to drive the MOSFETs.
+- Disables interrupts, initializes Timer0 and the ADC, then enables them.
+- Enters an endless loop reading `hall_state()` and calling `commutate()`.
 
-### Possíveis ajustes/casos de uso
-- Para inverter o sentido de rotação, basta inverter a sequência de atribuições dentro do `switch` de `commutate`.
-- Para suavizar ruídos do ADC, implemente média móvel ou adicione filtro RC em PC0.
-- Para monitorar `adc_value` ou `duty` via UART, envie dados no loop principal (utilize interrupções apenas o tempo necessário para acessar variáveis atômicas).
-- Em placas Arduino, desabilite a biblioteca padrão para não conflitar com `main()`.
+### Possible adjustments/use cases
+- To reverse the rotation direction, simply invert the assignment sequence inside the `commutate` `switch`.
+- To reduce ADC noise, implement a moving average or add an RC filter on PC0.
+- To monitor `adc_value` or `duty` over UART, send data in the main loop (keep interrupts only as long as needed for atomic access).
+- On Arduino boards disable the default library to avoid conflict with `main()`.
 

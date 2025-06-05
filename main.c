@@ -1,22 +1,22 @@
 /**
- * Controle de Motor BLDC em ATmega328P @ 16 MHz
- * 
- * - Leitura do ADC0 (PC0) em modo Free-Running, converte 0 – 5 V em 0 – 100 % de PWM
- *   (0 – 199 no OCR0B), gerando PWM em 10 kHz no pino OC0B (PD5).
- * - Sensores Hall em PC1, PC2 e PC3 definem posição do rotor (3 bits).
- * - Chaves superiores (High-Side) em PB0, PB1, PB2 — acionamento digital on/off.
- * - Chaves inferiores (Low-Side) em PB3, PB4, PB5 — gating via AND externo com PWM em PD5.
- * - Toda atualização de duty cycle do PWM ocorre na ISR do ADC; a rotina de comutação
- *   roda no loop principal, lendo sensores Hall e habilitando as chaves conforme posição
- *   do rotor, desde que adc_value > threshold (≈10).
+ * BLDC Motor Control on ATmega328P @ 16 MHz
  *
- * Deve-se conectar externamente cada linha PB3/4/5 a uma porta AND, junto com PD5 (PWM OC0B),
- * para que só haja acionamento do MOSFET se ambas as entradas do AND estiverem em nível alto.
+ * - Reads ADC0 (PC0) in Free-Running mode, converting 0 – 5 V to 0 – 100 % PWM
+ *   (0 – 199 in OCR0B) and generating a 10 kHz PWM on OC0B (PD5).
+ * - Hall sensors on PC1, PC2 and PC3 define the rotor position (3 bits).
+ * - High-side switches on PB0, PB1 and PB2 — digital on/off control.
+ * - Low-side switches on PB3, PB4 and PB5 — gating via external AND with PWM on PD5.
+ * - Every PWM duty update occurs in the ADC ISR; the commutation routine runs in
+ *   the main loop, reading the Hall sensors and enabling the switches according
+ *   to rotor position as long as adc_value > threshold (~10).
  *
- * Para compilar no Microchip Studio (Atmel Studio):
- * - Criar projeto “AVR C Executable” para ATmega328P.
- * - Definir F_CPU como 16000000UL (no código ou nas Symbols do projeto).
- * - Gravar fuses para cristal externo de 16 MHz (se aplicável).
+ * Each PB3/4/5 line must be externally ANDed with PD5 (PWM OC0B) so that a MOSFET
+ * is driven only when both inputs of the gate are high.
+ *
+ * To compile in Microchip Studio (Atmel Studio):
+ * - Create an "AVR C Executable" project for the ATmega328P.
+ * - Define F_CPU as 16000000UL (in the code or in the project symbols).
+ * - Program fuses for the 16 MHz external crystal if applicable.
  */
 
 #define F_CPU 16000000UL
@@ -25,23 +25,23 @@
 #include <avr/interrupt.h>
 #include <stdint.h>
 
-/* 
+/*
  * ----------------------------------------------------------------------------
- * Variável global para armazenar o valor do ADC (10 bits, 0–1023)
- * Atualizada na ISR(ADC_vect). Na função de comutação, lê-se com cli()/sei() para 
- * garantir leitura atômica de 16 bits.
+ * Global variable that stores the ADC value (10 bits, 0–1023).
+ * It is updated in ISR(ADC_vect) and read inside the commutation
+ * function using cli()/sei() to guarantee an atomic 16‑bit access.
  * ----------------------------------------------------------------------------
  */
 uint16_t adc_value;
 
 /*
  * ----------------------------------------------------------------------------
- * Definições de pinos (usando nomenclatura de registradores AVR):
+ * Pin definitions (using AVR register naming):
  * ----------------------------------------------------------------------------
- *   - Sensores Hall: PC1, PC2, PC3 (inputs digitais — MUX1:0 do ADC não está usando
- *     estes pinos, pois ADC0 = PC0)
- *   - High-Side MOSFETs: PB0 (Aʰ), PB1 (Bʰ), PB2 (Cʰ) → acionamento digital on/off
- *   - Low-Side MOSFETs: PB3 (Aˡ), PB4 (Bˡ), PB5 (Cˡ) → gating por AND externo com PWM (PD5)
+ *   - Hall sensors: PC1, PC2, PC3 (digital inputs — ADC0 uses PC0 so these pins
+ *     are free)
+ *   - High-side MOSFETs: PB0 (Aʰ), PB1 (Bʰ), PB2 (Cʰ) → digital on/off control
+ *   - Low-side MOSFETs: PB3 (Aˡ), PB4 (Bˡ), PB5 (Cˡ) → gated externally with the PWM on PD5
  */
 #define HALL1   PC1
 #define HALL2   PC2
@@ -57,55 +57,55 @@ uint16_t adc_value;
 
 /*
  * ----------------------------------------------------------------------------
- * Inicialização do Timer0 para geração de PWM em 10 kHz no canal OC0B (PD5)
+ * Timer0 initialization to generate a 10 kHz PWM on channel OC0B (PD5)
  * ----------------------------------------------------------------------------
  *
- * Configurações:
- *  - Modo Fast PWM, TOP = OCR0A → WGM02:0 = 1 1 1 (modo 7)
- *  - Saída não inversora em OC0B → COM0B1:0 = 1 0
+ * Settings:
+ *  - Fast PWM mode with TOP = OCR0A → WGM02:0 = 1 1 1 (mode 7)
+ *  - Non‑inverting output on OC0B → COM0B1:0 = 1 0
  *  - Prescaler = 8 → CS02:0 = 0 1 0
- *  - OCR0A = 199 → define TOP = 199 → f_PWM = F_CPU / (N·(TOP+1))
+ *  - OCR0A = 199 → sets TOP = 199 → f_PWM = F_CPU / (N·(TOP+1))
  *                       = 16 MHz / (8·200) = 10 000 Hz
- *  - OCR0B ajusta duty cycle entre 0 e 199 (0 – 100 %)
- *  - PD5 deve ser configurado como saída
+ *  - OCR0B adjusts duty cycle between 0 and 199 (0 – 100 %)
+ *  - PD5 must be configured as output
  */
 static void timer0_pwm_10kHz_init(void)
 {
-    // Configurar PD5 (OC0B) como saída
+    // Configure PD5 (OC0B) as output
     DDRD |= (1 << PD5);
 
-    // TCCR0A: WGM01=1, WGM00=1 → Fast PWM; COM0B1=1, COM0B0=0 → non-inverting no OC0B
+    // TCCR0A: WGM01=1, WGM00=1 → Fast PWM; COM0B1=1, COM0B0=0 → non-inverting on OC0B
     TCCR0A = (1 << WGM01) | (1 << WGM00)
            | (1 << COM0B1);
 
-    // TCCR0B: WGM02=1 → completa WGM02:0 = 7; CS01=1 → prescaler = 8
+    // TCCR0B: WGM02=1 → completes WGM02:0 = 7; CS01=1 → prescaler = 8
     TCCR0B = (1 << WGM02)
            | (1 << CS01);
 
-    // Define TOP em OCR0A para gerar exatamente 10 kHz
+    // Set TOP in OCR0A for exactly 10 kHz
     OCR0A = 199;
-    // Inicializa duty cycle em 0 (saída sempre LOW até primeira ISR do ADC)
+    // Start duty cycle at 0 (output stays LOW until first ADC ISR)
     OCR0B = 0;
 }
 
 /*
  * ----------------------------------------------------------------------------
- * Inicialização do ADC em modo Free-Running (canal ADC0, PC0) com interrupção
+ * ADC initialization in Free-Running mode (channel ADC0, PC0) with interrupt
  * ----------------------------------------------------------------------------
  *
- * Configurações:
- *  - REFS0=1, REFS1=0 → referência AVcc (5 V)
- *  - MUX3:0 = 0000 → canal ADC0 (pino PC0)
- *  - ADLAR = 0 → resultado justificado à direita (10 bits em ADC[9:0])
+ * Settings:
+ *  - REFS0=1, REFS1=0 → reference AVcc (5 V)
+ *  - MUX3:0 = 0000 → channel ADC0 (pin PC0)
+ *  - ADLAR = 0 → result right adjusted (10 bits in ADC[9:0])
  *  - ADPS2:0 = 1 1 1 → prescaler = 128 → F_ADC ≈ 16 MHz / 128 ≈ 125 kHz
- *  - ADATE = 1 → auto-trigger (Free-Running Mode)
- *  - ADIE = 1 → habilita interrupção no fim da conversão (ADC_vect)
- *  - ADTS2:0 = 0 0 0 → fonte de trigger = Free-Running
- *  - ADSC = 1 → inicia a primeira conversão; a partir daí, cada fim gera outra
+ *  - ADATE = 1 → auto trigger (Free-Running Mode)
+ *  - ADIE = 1 → enables interrupt at end of conversion (ADC_vect)
+ *  - ADTS2:0 = 0 0 0 → trigger source = Free-Running
+ *  - ADSC = 1 → starts the first conversion; each end triggers the next
  */
 static void adc_free_running_init(void)
 {
-    // Selecionar referência AVcc e canal ADC0 (PC0); ADLAR=0 → just. direita
+    // Select AVcc reference and ADC0 (PC0); ADLAR=0 → right adjusted
     ADMUX = (1 << REFS0)
           | (0 << REFS1)
           | (0 << ADLAR)
@@ -114,7 +114,7 @@ static void adc_free_running_init(void)
           | (0 << MUX1)
           | (0 << MUX0);
 
-    // Habilita ADC, Auto Trigger, Interrupt on Conversion, prescaler = 128
+    // Enable ADC, Auto Trigger, Interrupt on Conversion, prescaler = 128
     ADCSRA = (1 << ADEN)
            | (1 << ADATE)
            | (1 << ADIE)
@@ -122,22 +122,22 @@ static void adc_free_running_init(void)
            | (1 << ADPS1)
            | (1 << ADPS0);
 
-    // Modo de gatilho = Free-Running (ADTS2:0 = 0 0 0)
+    // Trigger mode = Free-Running (ADTS2:0 = 0 0 0)
     ADCSRB = (0 << ADTS2)
            | (0 << ADTS1)
            | (0 << ADTS0);
 
-    // Inicia a primeira conversão; após isso, o ADC fica em free-running
+    // Start the first conversion; after that the ADC runs continuously
     ADCSRA |= (1 << ADSC);
 }
 
 /*
  * ----------------------------------------------------------------------------
- * Lê o estado dos sensores Hall (3 bits) e retorna valor de 0 a 7:
+ * Reads the state of the Hall sensors (3 bits) and returns a value from 0 to 7:
  *   bit2 = HALL1 (PC1), bit1 = HALL2 (PC2), bit0 = HALL3 (PC3)
  * ----------------------------------------------------------------------------
- * Retorno:
- *   0b000 a 0b111 conforme sinais digitais dos pinos PC1, PC2, PC3
+ * Returns:
+ *   0b000 to 0b111 according to the digital signals on pins PC1, PC2, PC3
  */
 static inline uint8_t hall_state(void)
 {
@@ -150,155 +150,155 @@ static inline uint8_t hall_state(void)
 
 /*
  * ----------------------------------------------------------------------------
- * Função de comutação baseado em leitura de Hall (rotor em 6 passos)
+ * Commutation function based on Hall sensor readings (6-step rotor)
  * ----------------------------------------------------------------------------
  *
- * 1) Copia 'adc_value' de maneira atômica (cli()/sei()) para 'tmp_adc_value'.
- * 2) Se tmp_adc_value > 10 (≈ 0,05 V), habilita as chaves High-Side e Low-Side
- *    correspondentes à fase, conforme código Gray dos sensores Hall.
- * 3) Se tmp_adc_value ≤ 10, mantém todas as saídas em 0 (desliga todas as fases).
- * 4) Em hardware, cada linha de Low-Side (PB3, PB4, PB5) deve passar por AND
- *    com o sinal PWM em PD5 para modular a tensão do motor.
+ * 1) Atomically copies 'adc_value' (cli()/sei()) to 'tmp_adc_value'.
+ * 2) If tmp_adc_value > 10 (~0.05 V) enables the High-Side and Low-Side switches
+ *    corresponding to the phase according to the Gray code from the Hall sensors.
+ * 3) If tmp_adc_value ≤ 10 all outputs stay low (motor off).
+ * 4) In hardware each Low-Side line (PB3, PB4, PB5) must be ANDed with the PWM
+ *    signal on PD5 to modulate the motor voltage.
  *
- * Sequência de comutação padrão (assumindo 120° elétricos entre cada sensor Hall):
+ * Default commutation sequence (assuming 120° electrical between sensors):
  *   Hall = 0b001 (1): Cʰ, Bˡ
  *   Hall = 0b101 (5): Aʰ, Bˡ
  *   Hall = 0b100 (4): Aʰ, Cˡ
  *   Hall = 0b110 (6): Bʰ, Cˡ
  *   Hall = 0b010 (2): Bʰ, Aˡ
  *   Hall = 0b011 (3): Cʰ, Aˡ
- *
- * Ajuste a ordem caso o sentido de rotação fique invertido.
+
+ * Change the order if the rotation direction is reversed.
  */
 static void commutate(uint8_t hall)
 {
     uint16_t tmp_adc_value;
 
-    //-Cópia atômica de 16 bits de 'adc_value'-----------------------------------
-    cli();                  // desabilita interrupções
+    //-Atomic copy of 16 bits from 'adc_value'----------------------------------
+    cli();                  // disable interrupts
     tmp_adc_value = adc_value;
-    sei();                  // habilita interrupções
+    sei();                  // enable interrupts
 
-    //-Lê PORTB atual para evitar sobrescrever pinos não utilizados---------------
+    //-Read current PORTB to avoid overwriting unused pins-----------------------
     uint8_t tmp_PORTB = PORTB;
 
-    // Limpa todos os bits de High-Side e Low-Side (0 → desligado)
+    // Clear all High-Side and Low-Side bits (0 → off)
     tmp_PORTB &= ~((1 << AH_PIN) | (1 << BH_PIN) | (1 << CH_PIN)
                  | (1 << AL_PIN) | (1 << BL_PIN) | (1 << CL_PIN));
 
     if (tmp_adc_value > 10)
     {
-        // Se acima do threshold, comuta conforme valor de 'hall'
+        // If above the threshold, commutate according to 'hall'
         switch (hall)
         {
-            case 0b001:  // Hall = 1 → Cˡ e Bʰ
+            case 0b001:  // Hall = 1 → Cˡ and Bʰ
                 tmp_PORTB |= (1 << CH_PIN);  // High-Side C = 1
-                tmp_PORTB |= (1 << BL_PIN);  // Low-Side B = 1 (gate AND receberá PWM)
+                tmp_PORTB |= (1 << BL_PIN);  // Low-Side B = 1 (gated with PWM)
                 break;
 
-            case 0b101:  // Hall = 5 → Bˡ e Aʰ
+            case 0b101:  // Hall = 5 → Bˡ and Aʰ
                 tmp_PORTB |= (1 << AH_PIN);  // High-Side A = 1
                 tmp_PORTB |= (1 << BL_PIN);  // Low-Side B = 1
                 break;
 
-            case 0b100:  // Hall = 4 → Cˡ e Aʰ
+            case 0b100:  // Hall = 4 → Cˡ and Aʰ
                 tmp_PORTB |= (1 << AH_PIN);  // High-Side A = 1
                 tmp_PORTB |= (1 << CL_PIN);  // Low-Side C = 1
                 break;
 
-            case 0b110:  // Hall = 6 → Cˡ e Bʰ
+            case 0b110:  // Hall = 6 → Cˡ and Bʰ
                 tmp_PORTB |= (1 << BH_PIN);  // High-Side B = 1
                 tmp_PORTB |= (1 << CL_PIN);  // Low-Side C = 1
                 break;
 
-            case 0b010:  // Hall = 2 → Aˡ e Bʰ
+            case 0b010:  // Hall = 2 → Aˡ and Bʰ
                 tmp_PORTB |= (1 << BH_PIN);  // High-Side B = 1
                 tmp_PORTB |= (1 << AL_PIN);  // Low-Side A = 1
                 break;
 
-            case 0b011:  // Hall = 3 → Aˡ e Cʰ
+            case 0b011:  // Hall = 3 → Aˡ and Cʰ
                 tmp_PORTB |= (1 << CH_PIN);  // High-Side C = 1
                 tmp_PORTB |= (1 << AL_PIN);  // Low-Side A = 1
                 break;
 
             default:
-                // Se leitura inválida (0, 7 ou outros), não comuta nenhuma fase
+                // If reading invalid (0, 7 or others) do not commutate
                 break;
         }
     }
-    // Se tmp_adc_value <= 10, mantém todas as chaves desligadas (tmp_PORTB já limpo)
+    // If tmp_adc_value <= 10 keep all switches off (tmp_PORTB already cleared)
 
-    // Atualiza PORTB com a nova configuração
+    // Update PORTB with the new configuration
     PORTB = tmp_PORTB;
 }
 
 /*
  * ----------------------------------------------------------------------------
- * ISR do ADC: atualiza o duty cycle do PWM (OCR0B) proporcional ao valor do ADC
+ * ADC ISR: updates the PWM duty cycle (OCR0B) proportional to the ADC value
  * ----------------------------------------------------------------------------
  *
- * Executa a cada fim de conversão (modo Free-Running):
- * 1) Lê valor ADC de 10 bits (0–1023).
- * 2) Calcula duty = floor(adc_value * 199 / 1023) → mapeia 0 – 1023 em 0 – 199.
- * 3) Atualiza OCR0B (valor 8 bits) para definir duty cycle no Timer0.
+ * Runs at every end of conversion (Free-Running mode):
+ * 1) Reads the 10‑bit ADC value (0–1023).
+ * 2) Calculates duty = floor(adc_value * 199 / 1023) → maps 0 – 1023 to 0 – 199.
+ * 3) Updates OCR0B (8 bits) to set the Timer0 duty cycle.
  */
 ISR(ADC_vect)
 {
     uint16_t duty;
 
-    // Lê resultado de 10 bits do ADC (macro ADC faz leitura de ADCL e ADCH)
+    // Read 10-bit result from ADC (macro ADC reads ADCL and ADCH)
     adc_value = ADC;
 
-    // Cálculo de duty (0–199) para 0–100 % de 10 kHz
+    // Duty calculation (0–199) for 0–100 % at 10 kHz
     duty = (uint16_t)((adc_value * 199UL) / 1023UL);
 
-    // Atualiza OCR0B (8 bits). Casting implícito descarta os bits superiores.
+    // Update OCR0B (8 bits). Implicit cast discards upper bits.
     OCR0B = (uint8_t)duty;
 }
 
 int main(void)
 {
     //----------------------------------------------------------------------------- 
-    // Configuração de pinos:
-    //  - Configura PB0–PB5 como saída (High-Side e Low-Side MOSFETs)
-    //  - PD5 será configurado em timer0_pwm_10kHz_init()
-    //  - PC1–PC3 já são entradas por padrão (sensores Hall)
+    // Pin configuration:
+    //  - Set PB0–PB5 as outputs (High-Side and Low-Side MOSFETs)
+    //  - PD5 will be configured in timer0_pwm_10kHz_init()
+    //  - PC1–PC3 are inputs by default (Hall sensors)
     //-----------------------------------------------------------------------------
     DDRB |= (1 << AH_PIN) | (1 << BH_PIN) | (1 << CH_PIN)
           | (1 << AL_PIN) | (1 << BL_PIN) | (1 << CL_PIN);
 
     //----------------------------------------------------------------------------- 
-    // Desabilita interrupções globais durante configuração de periféricos
+    // Disable global interrupts while configuring peripherals
     //-----------------------------------------------------------------------------
     cli();
 
     //-----------------------------------------------------------------------------
-    // Inicializa Timer0 para gerar PWM em 10 kHz no pino PD5 (OC0B)
+    // Initialize Timer0 to generate 10 kHz PWM on PD5 (OC0B)
     //-----------------------------------------------------------------------------
     timer0_pwm_10kHz_init();
 
     //-----------------------------------------------------------------------------
-    // Inicializa ADC em modo Free-Running no canal ADC0 (PC0) com interrupção
+    // Initialize ADC in Free-Running mode on channel ADC0 (PC0) with interrupt
     //-----------------------------------------------------------------------------
     adc_free_running_init();
 
     //-----------------------------------------------------------------------------
-    // Habilita interrupções globais para permitir ISR do ADC
+    // Enable global interrupts to allow the ADC ISR
     //-----------------------------------------------------------------------------
     sei();
 
     //----------------------------------------------------------------------------- 
-    // Loop principal vazio: 
-    //   - Apenas lê sensores Hall e chama commutate() continuamente.
-    //   - Toda lógica de modulação de tensão (duty) está na ISR do ADC.
+    // Empty main loop:
+    //   - Just reads the Hall sensors and calls commutate() continuously.
+    //   - All duty cycle modulation is handled in the ADC ISR.
     //-----------------------------------------------------------------------------
     while (1)
     {
         uint8_t hall = hall_state();
         commutate(hall);
-        // Pode-se inserir aqui um pequeno _NOP_ ou outra lógica não crítica
+        // A small _NOP_ or other noncritical logic could be placed here
     }
 
-    // Nunca alcançado
+    // Never reached
     return 0;
 }
