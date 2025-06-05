@@ -10,7 +10,21 @@ O projeto pode ser compilado no **Microchip Studio** ou diretamente no terminal 
 make
 ```
 
-O arquivo `wiring.txt` descreve o esquema de conexão recomendado.
+## Entradas e saídas
+
+| Pino | Função |
+|------|--------------------------------------------------------------|
+| PC0  | ADC0 - potenciômetro de comando |
+| PC1  | Hall 1 (entrada digital) |
+| PC2  | Hall 2 (entrada digital) |
+| PC3  | Hall 3 (entrada digital) |
+| PB0  | AH - MOSFET superior fase A |
+| PB1  | BH - MOSFET superior fase B |
+| PB2  | CH - MOSFET superior fase C |
+| PB3  | AL - MOSFET inferior fase A (AND com PWM) |
+| PB4  | BL - MOSFET inferior fase B (AND com PWM) |
+| PB5  | CL - MOSFET inferior fase C (AND com PWM) |
+| PD5  | OC0B - saída PWM 10 kHz |
 
 ## Explicações detalhadas por bloco
 
@@ -23,6 +37,9 @@ O arquivo `wiring.txt` descreve o esquema de conexão recomendado.
 - `HALL1`, `HALL2`, `HALL3` (PC1, PC2, PC3): entradas digitais conectadas aos sensores Hall do motor.
 - `AH_PIN`, `BH_PIN`, `CH_PIN` (PB0, PB1, PB2): chaves superiores (high-side MOSFETs), apenas ligam 5 V ou desligam.
 - `AL_PIN`, `BL_PIN`, `CL_PIN` (PB3, PB4, PB5): chaves inferiores (low-side MOSFETs), ANDadas externamente com o PWM gerado em PD5.
+
+### Gatilho do PWM e AND externo
+O Timer0 gera PWM de 10 kHz no pino PD5 (OC0B). Em hardware, as linhas PB3, PB4 e PB5 (chaves inferiores) sao ANDadas externamente com esse sinal. Assim, o firmware apenas coloca PBx em nivel alto para habilitar a fase desejada e o PWM em PD5 modula a corrente.
 
 ### Inicialização do Timer0 (`timer0_pwm_10kHz_init`)
 - `DDRD |= (1 << PD5);` configura PD5 (OC0B) como saída.
